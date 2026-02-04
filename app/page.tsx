@@ -1,16 +1,24 @@
 'use client';
 
 import { useState, useRef } from 'react';
+// import LightRays from '../components/LightRays'; // Replaced by GeometricBackground
+import GeometricBackground from '../components/GeometricBackground';
+import HealthChat from '../components/HealthChat';
+import Link from 'next/link';
+import { Circle } from 'lucide-react';
 
 export default function Home() {
   const [symptoms, setSymptoms] = useState('');
   const [language, setLanguage] = useState('English');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [whoData, setWhoData] = useState<any[]>([]);
   const [error, setError] = useState('');
-  
+  const [showPanel, setShowPanel] = useState(false);
+
   // Audio Recording State
   const [isRecording, setIsRecording] = useState(false);
+  const [transcription, setTranscription] = useState('');
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
@@ -18,28 +26,58 @@ export default function Home() {
   const [isPlaying, setIsPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  const handleAnalyze = async () => {
-    if (!symptoms.trim()) return;
+  function stopAudio() {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      setIsPlaying(false);
+    }
+  }
+
+  // Chat updates analysis -> Panel slides in
+  const handleChatUpdate = (newMessage: string) => {
+    const updatedSymptoms = symptoms ? `${symptoms}. ${newMessage}` : newMessage;
+    setSymptoms(updatedSymptoms);
+    handleAnalyze(updatedSymptoms);
+  };
+
+  const handleAnalyze = async (manualSymptoms?: string) => {
+    const textToAnalyze = typeof manualSymptoms === 'string' ? manualSymptoms : symptoms;
+
+    if (!textToAnalyze.trim()) return;
 
     setLoading(true);
     setError('');
-    setResult(null);
+    setWhoData([]);
     stopAudio();
 
     try {
-      const response = await fetch('/api/analyze', {
+      // Step 1: AI Analysis
+      const analyzeResponse = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symptoms, language }),
+        body: JSON.stringify({ symptoms: textToAnalyze, language }),
       });
 
-      const data = await response.json();
+      const analyzeData = await analyzeResponse.json();
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to analyze symptoms');
+      if (!analyzeResponse.ok) {
+        throw new Error(analyzeData.error || 'Failed to analyze symptoms');
       }
 
-      setResult(data);
+      setResult(analyzeData);
+      setShowPanel(true); // Open panel on result
+
+      // Step 2: WHO Scraping
+      let whoQuery = textToAnalyze.split(' ').slice(0, 3).join(' ');
+      if (analyzeData.probable_causes && analyzeData.probable_causes.length > 0) {
+        whoQuery = analyzeData.probable_causes[0];
+      }
+
+      const whoResponse = await fetch(`/api/scrape/who?query=${encodeURIComponent(whoQuery)}`);
+      const whoJson = await whoResponse.json();
+      setWhoData(whoJson.results || []);
+
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -63,16 +101,19 @@ export default function Home() {
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         await sendAudioToSTT(audioBlob);
-        
-        // Stop all tracks to release microphone
         stream.getTracks().forEach(track => track.stop());
       };
 
       mediaRecorder.start();
       setIsRecording(true);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error accessing microphone:', err);
-      setError('Could not access microphone.');
+      // More friendly error for missing keys
+      if (err.message && err.message.includes('Missing IBM STT')) {
+        setError('Speech-to-Text API keys are missing. Please check configuration.');
+      } else {
+        setError('Could not access microphone or STT service failed.');
+      }
     }
   };
 
@@ -98,7 +139,8 @@ export default function Home() {
       if (!response.ok) throw new Error(data.error || 'Speech to text failed');
 
       if (data.transcript) {
-        setSymptoms((prev) => (prev ? `${prev} ${data.transcript}` : data.transcript));
+        // Feed voice input into chat input field
+        setTranscription(data.transcript);
       }
     } catch (err: any) {
       setError(err.message);
@@ -109,248 +151,252 @@ export default function Home() {
 
   const playAnalysis = async () => {
     if (!result) return;
-    
-    // Construct the text to read
     const textToRead = `Analysis: ${result.analysis}. Probable causes include ${result.probable_causes.join(', ')}. Urgency level is ${result.urgency_level}. Medical advice: ${result.medical_advice}`;
 
     try {
-        setIsPlaying(true);
-        const response = await fetch('/api/tts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: textToRead }),
-        });
+      setIsPlaying(true);
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: textToRead }),
+      });
 
-        if (!response.ok) throw new Error('Failed to generate speech');
+      if (!response.ok) throw new Error('Failed to generate speech');
 
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        
-        if (audioRef.current) {
-            audioRef.current.pause();
-            URL.revokeObjectURL(audioRef.current.src);
-        }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
 
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.onended = () => setIsPlaying(false);
-        audio.play();
+      if (audioRef.current) {
+        audioRef.current.pause();
+        URL.revokeObjectURL(audioRef.current.src);
+      }
+
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => setIsPlaying(false);
+      audio.play();
 
     } catch (err: any) {
-        console.error("TTS Error", err);
+      console.error("TTS Error", err);
+      if (err.message && err.message.includes('Missing IBM TTS')) {
+        setError('Text-to-Speech API keys are missing. Please check configuration.');
+      } else {
         setError(err.message);
-        setIsPlaying(false);
+      }
+      setIsPlaying(false);
     }
   };
 
-  const stopAudio = () => {
-      if (audioRef.current) {
-          audioRef.current.pause();
-          audioRef.current.currentTime = 0;
-          setIsPlaying(false);
-      }
-  };
-
-
   const getUrgencyColor = (level: string) => {
     switch (level?.toLowerCase()) {
-      case 'emergency': return 'bg-red-600 text-white';
-      case 'high': return 'bg-orange-500 text-white';
-      case 'medium': return 'bg-yellow-500 text-black';
-      case 'low': return 'bg-green-500 text-white';
-      default: return 'bg-gray-500 text-white';
+      case 'emergency': return 'bg-rose-500/20 text-rose-300 border-rose-500/50';
+      case 'high': return 'bg-orange-500/20 text-orange-300 border-orange-500/50';
+      case 'medium': return 'bg-amber-500/20 text-amber-300 border-amber-500/50';
+      case 'low': return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50';
+      default: return 'bg-slate-500/20 text-slate-300 border-slate-500/50';
     }
   };
 
   return (
-    <main className="min-h-screen bg-gray-50 p-8 font-sans">
-      <div className="max-w-4xl mx-auto space-y-8">
-        
-        {/* Header */}
-        <header className="text-center space-y-4">
-          <h1 className="text-4xl font-bold text-blue-900 tracking-tight">
-            Agentic AI Health Symptom Checker
-          </h1>
-          <p className="text-gray-600 text-lg">
-            Powered by <span className="font-semibold text-blue-600">IBM Granite</span>
-          </p>
-          <div className="inline-block bg-blue-50 text-blue-800 px-4 py-2 rounded-full text-sm border border-blue-100">
-            🛡️ Verified Medical Data Sources & Guidelines
-          </div>
-        </header>
+    <GeometricBackground>
+      <div className="relative z-10 w-full h-full flex flex-col md:flex-row min-h-screen">
 
-        {/* Input Section */}
-        <div className="bg-white rounded-2xl shadow-lg p-8 border border-gray-100">
-          <div className="space-y-4">
-            <div className="flex justify-between items-end mb-2">
-                <label className="block text-gray-700 font-medium text-lg">
-                Describe your symptoms
-                </label>
-                <button
-                    onClick={isRecording ? stopRecording : startRecording}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-colors ${
-                        isRecording 
-                        ? 'bg-red-100 text-red-600 animate-pulse border border-red-200' 
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-gray-200'
-                    }`}
-                >
-                    {isRecording ? (
-                        <>
-                            <span className="h-3 w-3 bg-red-500 rounded-full"></span>
-                            Stop Recording
-                        </>
-                    ) : (
-                        <>
-                            <span>🎤</span> Use Microphone
-                        </>
-                    )}
-                </button>
-            </div>
-            
-            <textarea
-              value={symptoms}
-              onChange={(e) => setSymptoms(e.target.value)}
-              placeholder="e.g., I have a sore throat, mild fever, and a headache that started yesterday..."
-              className="w-full h-32 p-4 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-gray-700 bg-gray-50 mb-4"
-            />
-            
-            <div className="flex flex-col sm:flex-row gap-4 items-center justify-between">
-              <select 
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-                className="px-4 py-2 rounded-lg border border-gray-200 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="English">English</option>
-                <option value="Spanish">Spanish</option>
-                <option value="French">French</option>
-                <option value="Hindi">Hindi</option>
-                <option value="German">German</option>
-              </select>
+        {/* CENTER: Chat Interface (Takes full width if panel closed, shifts if open) */}
+        <div className={`flex-1 flex flex-col h-full transition-all duration-700 ease-[cubic-bezier(0.25,0.8,0.25,1)] p-4 md:p-8 ${showPanel ? 'md:w-[55%]' : 'w-full max-w-5xl mx-auto'}`}>
 
-              <button
-                onClick={handleAnalyze}
-                disabled={loading || !symptoms}
-                className={`px-8 py-3 rounded-xl font-bold text-white transition-all transform hover:scale-105 active:scale-95 shadow-md
-                  ${loading || !symptoms ? 'bg-gray-300 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
-              >
-                {loading ? (
-                  <span className="flex items-center gap-2">
-                    <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Processing...
-                  </span>
-                ) : 'Check Symptoms'}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Error Message */}
-        {error && (
-          <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-r shadow-sm">
-            <div className="flex">
-              <div className="shrink-0">
-                ⚠️
-              </div>
-              <div className="ml-3">
-                <p className="text-sm text-red-700">{error}</p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Results Section */}
-        {result && (
-          <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden animate-fade-in-up">
-            
-            {/* Result Header */}
-            <div className={`p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50`}>
-              <div className="flex items-center gap-4">
-                <h2 className="text-2xl font-bold text-gray-800">Health Assessment</h2>
-                <button 
-                  onClick={isPlaying ? stopAudio : playAnalysis}
-                  className="p-2 rounded-full hover:bg-gray-200 transition-colors"
-                  title="Read aloud"
-                >
-                  {isPlaying ? '⏹️ Stop' : '🔊 Listen'}
-                </button>
-              </div>
-              
-              {result.urgency_level && (
-                <span className={`px-4 py-1.5 rounded-full text-sm font-bold shadow-sm ${getUrgencyColor(result.urgency_level)}`}>
-                  {result.urgency_level} Priority
+          {/* Header / Hero - Compact Row Layout */}
+          <header className="flex-shrink-0 flex flex-col md:flex-row justify-between items-end md:items-center mb-6 gap-4">
+            <div className="flex flex-col gap-1 w-full md:w-auto">
+              <div className="flex items-center gap-3">
+                <h1 className="text-2xl md:text-3xl font-bold tracking-tight whitespace-nowrap">
+                  <span className="bg-clip-text text-transparent bg-gradient-to-b from-white to-white/80">Health</span>
+                  <span className="bg-clip-text text-transparent bg-gradient-to-r from-indigo-300 via-white/90 to-rose-300 ml-2">Assistant</span>
+                </h1>
+                <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-[10px] text-indigo-200 uppercase tracking-widest font-semibold">
+                  <span className="w-1 h-1 rounded-full bg-indigo-400 animate-pulse"></span>
+                  IBM Granite Powered
                 </span>
+              </div>
+              <p className="text-white/50 text-xs md:text-sm font-light max-w-lg leading-relaxed">
+                Your advanced AI medical companion. Describe symptoms for real-time analysis, potential causes, and WHO-backed health resources.
+              </p>
+
+              {/* Mobile Badge */}
+              <span className="md:hidden inline-flex items-center gap-1 self-start px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-[10px] text-indigo-200 uppercase tracking-widest font-semibold mt-1">
+                IBM Granite Powered
+              </span>
+            </div>
+
+            {/* Top Right Controls & WHO Card Container */}
+            <div className="flex items-center gap-3 self-end md:self-auto min-w-fit">
+              <Link href="/drug-info" className="px-4 py-2 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 transition-colors text-xs flex items-center gap-2 text-white/70 whitespace-nowrap">
+                💊 Drug Info
+              </Link>
+
+              {/* WHO Quick Card (Floating/Popover style) */}
+              {whoData.length > 0 && !showPanel && (
+                <div className="absolute top-20 right-8 z-50 w-64 rounded-xl bg-[#0a0a0a]/90 border border-white/10 backdrop-blur-xl p-4 shadow-2xl animate-in slide-in-from-top-2 fade-in">
+                  <div className="flex justify-between items-start mb-2">
+                    <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider flex items-center gap-1">
+                      <span className="w-1 h-1 bg-blue-400 rounded-full"></span> WHO Insight
+                    </span>
+                    <button onClick={() => setWhoData([])} className="text-white/20 hover:text-white/80 text-xs transition-colors">✕</button>
+                  </div>
+                  <h4 className="text-sm font-medium text-white/90 mb-1 line-clamp-2">{whoData[0].title}</h4>
+                  <a href={whoData[0].link} target="_blank" className="text-[10px] flex items-center gap-1 text-blue-300 hover:text-blue-200 transition-colors mt-2">
+                    View Source ↗
+                  </a>
+                </div>
               )}
             </div>
+          </header>
 
-            <div className="p-8 space-y-8">
-              
-              {/* Analysis */}
-              <div className="prose max-w-none">
-                <h3 className="text-lg font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                  🔍 Analysis
-                </h3>
-                <p className="text-gray-600 leading-relaxed bg-blue-50/50 p-4 rounded-lg">
-                  {result.analysis}
-                </p>
+          {/* Chat Container - Maximized Height */}
+          <div className="flex-1 rounded-[2.5rem] border border-white/10 bg-white/[0.02] backdrop-blur-2xl shadow-[0_8px_32px_0_rgba(0,0,0,0.36)] relative overflow-hidden flex flex-col min-h-0 ring-1 ring-white/5 mx-auto w-full">
+
+            {/* Chat Controls (Mic/Lang) */}
+            <div className="flex justify-between items-center px-6 py-4 border-b border-white/5">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center text-sm border border-indigo-500/30">🤖</div>
+                <h3 className="font-medium text-white/80">Consultation</h3>
               </div>
-
-              <div className="grid md:grid-cols-2 gap-8">
-                {/* Probable Causes */}
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                    📋 Probable Causes
-                  </h3>
-                  <ul className="space-y-2">
-                    {result.probable_causes?.map((cause: string, idx: number) => (
-                      <li key={idx} className="flex items-start gap-3 bg-gray-50 p-3 rounded-lg">
-                        <span className="text-blue-500 font-bold">•</span>
-                        <span className="text-gray-700">{cause}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                {/* Home Remedies */}
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                    🌿 Home Remedies
-                  </h3>
-                  <ul className="space-y-2">
-                    {result.home_remedies?.map((remedy: string, idx: number) => (
-                      <li key={idx} className="flex items-start gap-3 bg-green-50 p-3 rounded-lg border border-green-100">
-                        <span className="text-green-600">✓</span>
-                        <span className="text-gray-700">{remedy}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+              <div className="flex gap-2">
+                <select
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                  className="bg-black/20 border border-white/10 rounded-lg text-xs text-white/60 px-2 py-1 outline-none"
+                >
+                  <option value="English">EN</option>
+                  <option value="Spanish">ES</option>
+                  <option value="French">FR</option>
+                </select>
+                <button
+                  onClick={isRecording ? stopRecording : startRecording}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all border ${isRecording
+                    ? 'bg-rose-500/20 border-rose-500 text-rose-200 animate-pulse'
+                    : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10 hover:text-white'
+                    }`}
+                >
+                  {isRecording ? 'Listening...' : '🎤 Voice Input'}
+                </button>
               </div>
-
-              {/* Medical Advice */}
-              <div className="bg-yellow-50 border border-yellow-100 rounded-xl p-6">
-                <h3 className="text-lg font-semibold text-yellow-900 mb-2 flex items-center gap-2">
-                  👨‍⚕️ Medical Recommendation
-                </h3>
-                <p className="text-yellow-800">
-                  {result.medical_advice}
-                </p>
-              </div>
-
             </div>
 
-             {/* Disclaimer Footer */}
-            <div className="bg-gray-100 p-4 text-center border-t border-gray-200">
-              <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-1">Disclaimer</p>
-              <p className="text-sm text-gray-600 italic max-w-2xl mx-auto">
-                {result.disclaimer || "This tool is for educational purposes only and does not constitute medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."}
-              </p>
+            <div className="flex-1 overflow-hidden">
+              <HealthChat diagnosisContext={result} onSymptomUpdate={handleChatUpdate} voiceInput={transcription} />
             </div>
           </div>
-        )}
+
+          {/* Error Message */}
+          {error && (
+            <div className="mt-4 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-sm flex items-center gap-3 animate-in slide-in-from-bottom-2">
+              ⚠️ {error}
+            </div>
+          )}
+
+        </div>
+
+        {/* RIGHT: Sliding Analysis Panel */}
+        <div className={`fixed inset-y-0 right-0 w-full md:w-[45%] bg-[#050505]/90 backdrop-blur-3xl border-l border-white/10 shadow-2xl transform transition-transform duration-700 ease-[cubic-bezier(0.25,0.8,0.25,1)] z-50 overflow-y-auto
+            ${showPanel ? 'translate-x-0' : 'translate-x-full'}`}>
+
+          {/* Panel Header */}
+          <div className="p-8 pb-4 flex justify-between items-center sticky top-0 bg-[#050505]/80 backdrop-blur-xl z-10 border-b border-white/5">
+            <h2 className="text-2xl font-bold flex items-center gap-3 text-white">
+              <span className="text-3xl">🩺</span> Analysis
+            </h2>
+            <button onClick={() => setShowPanel(false)} className="p-2 rounded-full hover:bg-white/10 transition-colors text-white/50 hover:text-white">
+              ✕
+            </button>
+          </div>
+
+          {/* Panel Content */}
+          <div className="p-8 space-y-8">
+            {result ? (
+              <>
+                {/* Clinical Summary */}
+                <div className="space-y-4 animate-in slide-in-from-right-10 fade-in duration-500">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-indigo-400 font-medium tracking-wide text-xs uppercase">Clinical Insight</h3>
+                    {result.urgency_level && (
+                      <span className={`px-3 py-1 rounded-full text-xs font-bold border ${getUrgencyColor(result.urgency_level)}`}>
+                        {result.urgency_level}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-lg leading-relaxed text-white/90 font-light border-l-2 border-indigo-500/50 pl-4">
+                    {result.analysis}
+                  </p>
+
+                  <div className="flex gap-2 mt-4">
+                    <button
+                      onClick={isPlaying ? stopAudio : playAnalysis}
+                      className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-white/70 flex items-center gap-2 transition-all"
+                    >
+                      {isPlaying ? '⏹️ Stop Reading' : '🔊 Read Analysis'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Causes */}
+                <div className="animate-in slide-in-from-right-10 fade-in duration-700 delay-100">
+                  <h3 className="text-amber-400 font-medium tracking-wide text-xs uppercase mb-3">Potential Causes</h3>
+                  <div className="grid grid-cols-1 gap-3">
+                    {result.probable_causes?.map((cause: string, i: number) => (
+                      <div key={i} className="p-4 rounded-xl bg-white/[0.03] border border-white/10 flex items-center gap-3">
+                        <div className="w-1.5 h-1.5 rounded-full bg-amber-400/80 shadow-[0_0_10px_rgba(251,191,36,0.5)]"></div>
+                        <span className="text-white/80 font-light">{cause}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Medical Advice */}
+                <div className="p-6 rounded-2xl bg-gradient-to-br from-indigo-900/20 to-purple-900/20 border border-indigo-500/20 animate-in slide-in-from-right-10 fade-in duration-700 delay-200">
+                  <h3 className="text-white font-medium tracking-wide text-xs uppercase mb-2">Recommendation</h3>
+                  <p className="text-indigo-100/80 text-sm leading-relaxed font-light">
+                    {result.medical_advice}
+                  </p>
+                  <ul className="mt-4 space-y-2">
+                    {result.home_remedies?.map((remedy: string, idx: number) => (
+                      <li key={idx} className="flex items-start gap-2 text-xs text-indigo-200/60">
+                        <span className="text-indigo-400 mt-0.5">✓</span>
+                        {remedy}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* WHO Data */}
+                {whoData.length > 0 && (
+                  <div className="animate-in slide-in-from-right-10 fade-in duration-700 delay-300">
+                    <h3 className="text-blue-400 font-medium tracking-wide text-xs uppercase mb-3">WHO Resources</h3>
+                    <div className="space-y-3">
+                      {whoData.map((item, i) => (
+                        <a key={i} href={item.link} target="_blank" className="block p-4 rounded-xl bg-white/[0.02] hover:bg-white/[0.05] border border-white/5 transition-colors group">
+                          <div className="font-medium text-blue-200 group-hover:text-blue-100 mb-1 text-sm">{item.title}</div>
+                          <div className="text-xs text-white/40 line-clamp-2 font-light">{item.snippet}</div>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-8 border-t border-white/5">
+                  <p className="text-[10px] text-white/20 uppercase tracking-widest text-center">
+                    {result.disclaimer || "Not a medical diagnosis."}
+                  </p>
+                </div>
+              </>
+            ) : (
+              <div className="h-64 flex flex-col items-center justify-center text-white/20">
+                <div className="text-4xl mb-4 animate-pulse duration-[3s]">⚛</div>
+                <p className="text-sm font-light">Analysis will appear here...</p>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
-    </main>
+    </GeometricBackground>
   );
 }

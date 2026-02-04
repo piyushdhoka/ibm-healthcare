@@ -5,11 +5,22 @@
   --foreground: #171717;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+@theme {
+  --font-sans: var(--font-outfit);
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-white/70 backdrop-blur-xl border border-white/20 shadow-xl;
+  }
+
+  .glass-card {
+    @apply bg-white/60 backdrop-blur-md border border-white/50 shadow-sm hover:shadow-md transition-all duration-300;
+  }
+
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-cyan-500;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
