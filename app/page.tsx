@@ -2,8 +2,8 @@
 
 import { useState, useRef } from 'react';
 // import LightRays from '../components/LightRays'; // Replaced by GeometricBackground
-import GeometricBackground from '../components/GeometricBackground';
-import HealthChat from '../components/HealthChat';
+import GeometricBackground from '@/components/GeometricBackground';
+import HealthChat from '@/components/HealthChat';
 import Link from 'next/link';
 import { Circle } from 'lucide-react';
 import jsPDF from 'jspdf';
@@ -264,12 +264,12 @@ export default function Home() {
         <div className={`flex-1 flex flex-col h-full transition-all duration-700 ease-[cubic-bezier(0.25,0.8,0.25,1)] p-4 md:p-8 ${showPanel ? 'md:w-[55%]' : 'w-full max-w-5xl mx-auto'}`}>
 
           {/* Header / Hero - Compact Row Layout */}
-          <header className="flex-shrink-0 flex flex-col md:flex-row justify-between items-end md:items-center mb-6 gap-4">
+          <header className="shrink-0 flex flex-col md:flex-row justify-between items-end md:items-center mb-6 gap-4">
             <div className="flex flex-col gap-1 w-full md:w-auto">
               <div className="flex items-center gap-3">
                 <h1 className="text-2xl md:text-3xl font-bold tracking-tight whitespace-nowrap">
-                  <span className="bg-clip-text text-transparent bg-gradient-to-b from-white to-white/80">Health</span>
-                  <span className="bg-clip-text text-transparent bg-gradient-to-r from-indigo-300 via-white/90 to-rose-300 ml-2">Assistant</span>
+                  <span className="bg-clip-text text-transparent bg-linear-to-b from-white to-white/80">Health</span>
+                  <span className="bg-clip-text text-transparent bg-linear-to-r from-indigo-300 via-white/90 to-rose-300 ml-2">Assistant</span>
                 </h1>
                 <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-[10px] text-indigo-200 uppercase tracking-widest font-semibold">
                   <span className="w-1 h-1 rounded-full bg-indigo-400 animate-pulse"></span>

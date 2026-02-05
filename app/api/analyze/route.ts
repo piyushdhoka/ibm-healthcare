@@ -1,148 +1,22 @@
 import { NextResponse } from 'next/server';
-
-// Interface for the expected response structure
-interface HealthResponse {
-  analysis: string;
-  probable_causes: string[];
-  urgency_level: 'Low' | 'Medium' | 'High' | 'Emergency';
-  home_remedies: string[];
-  medical_advice: string;
-  disclaimer: string;
-}
+import { analyzeSymptoms } from '@/lib/watson';
 
 export async function POST(req: Request) {
   try {
-    const { symptoms, language = 'English' } = await req.json();
+    const { messages, language = 'English', symptoms } = await req.json();
 
-    if (!symptoms) {
-      return NextResponse.json({ error: 'Symptoms are required' }, { status: 400 });
+    // Support legacy "symptoms" field for initial call, which we convert to a message
+    let conversation = messages || [];
+    if (!messages && symptoms) {
+        conversation = [{ role: 'user', content: symptoms }];
     }
 
-    const API_KEY = process.env.IBM_CLOUD_API_KEY;
-    const PROJECT_ID = process.env.WATSONX_PROJECT_ID;
-    const URL = process.env.WATSONX_URL || 'https://us-south.ml.cloud.ibm.com'; // Default to US South if not provided
-
-    if (!API_KEY || !PROJECT_ID) {
-      return NextResponse.json({ error: 'Missing IBM Cloud credentials' }, { status: 500 });
+    if (!conversation || conversation.length === 0) {
+      return NextResponse.json({ error: 'Messages are required' }, { status: 400 });
     }
 
-    // 1. Get IAM Token
-    const tokenResponse = await fetch('https://iam.cloud.ibm.com/identity/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept': 'application/json',
-      },
-      body: new URLSearchParams({
-        grant_type: 'urn:ibm:params:oauth:grant-type:apikey',
-        apikey: API_KEY,
-      }),
-    });
-
-    if (!tokenResponse.ok) {
-      throw new Error('Failed to obtain IAM token');
-    }
-
-    const tokenData = await tokenResponse.json();
-    const accessToken = tokenData.access_token;
-
-    // 2. Call Watsonx.ai (using IBM Granite)
-    // We use granite-3-8b-instruct or similar available model
-    const modelId = 'ibm/granite-3-8b-instruct';
-
-    const systemPrompt = `You are an AI Health Symptom Checker agent supported by IBM Granite. 
-    Your goal is to analyze symptoms provided by the user and offer health insights.
-    
-    IMPORTANT GUIDELINES:
-    1. PRIORITIZE SAFETY. If symptoms suggest a life-threatening emergency (chest pain, difficulty breathing, stroke signs), advise immediate emergency care.
-    2. Provide PROBABLE causes, not definitive diagnoses.
-    3. Suggest clear, actionable home remedies if applicable.
-    4. Always include a disclaimer that you are an AI and not a doctor.
-    5. Output the response in valid JSON format ONLY.
-    6. Respond in the language: ${language}.
-    7. CRITICAL: All user-facing strings (values in the JSON) MUST be in ${language}. 
-       If ${language} is "Hindi", use Devanagari script for the values of "analysis", "probable_causes", "home_remedies", "medical_advice", and "disclaimer". Do not just translate the keys, translate the CONTENT.
-    
-    ${language === 'Hindi' ? `
-    Example Output in Hindi:
-    {
-      "analysis": "रोगी को पेट में तेज दर्द और उल्टी की शिकायत है।",
-      "probable_causes": ["विषाक्त भोजन", "गैस", "पेट का संक्रमण"],
-      "english_disease_name": "Food Poisoning",
-      "urgency_level": "Medium",
-      "home_remedies": ["अदरक की चाय पिएं", "हल्का भोजन करें", "हाइड्रेटेड रहें"],
-      "medical_advice": "यदि दर्द 24 घंटे से अधिक समय तक रहता है, तो डॉक्टर से परामर्श लें।",
-      "disclaimer": "मैं एक एआई हूँ, डॉक्टर नहीं। यह चिकित्सा सलाह नहीं है।"
-    }
-    ` : ''}
-
-    JSON Schema:
-    {
-      "analysis": "Brief summary of the symptoms.",
-      "probable_causes": ["Cause 1", "Cause 2", "Cause 3"],
-      "english_disease_name": "The most probable cause in English (for search purposes)",
-      "urgency_level": "Low" | "Medium" | "High" | "Emergency",
-      "home_remedies": ["Remedy 1", "Remedy 2"],
-      "medical_advice": "When to see a doctor...",
-      "disclaimer": "Standard medical disclaimer..."
-    }
-    `;
-
-    const userPrompt = `User Symptoms: ${symptoms}\n\nIMPORTANT: Output the JSON values in ${language} language.${language === 'Hindi' ? ' Use Devanagari script.' : ''}`;
-
-    const payload = {
-      model_id: modelId,
-      project_id: PROJECT_ID,
-      input: `System: ${systemPrompt}\n\nUser: ${userPrompt}\n\nAssistant:`,
-      parameters: {
-        decoding_method: 'greedy',
-        max_new_tokens: 500,
-        min_new_tokens: 1,
-        stop_sequences: ['User:', 'System:', 'Disclaimer:'],
-        repetition_penalty: 1.05
-      }
-    };
-
-    const scoringResponse = await fetch(`${URL}/ml/v1/text/generation?version=2023-05-29`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'Authorization': `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!scoringResponse.ok) {
-      const errorText = await scoringResponse.text();
-      console.error("Watsonx API Error:", errorText);
-      throw new Error(`Watsonx API Error: ${scoringResponse.statusText}`);
-    }
-
-    const data = await scoringResponse.json();
-    const generatedText = data.results[0].generated_text;
-
-    // Attempt to parse JSON from the model response
-    // Sometimes models add extra text, so we try to find the JSON block
-    let parsedData: HealthResponse;
-    try {
-      // specific cleanup if model returns markdown code blocks
-      const jsonMatch = generatedText.match(/\{[\s\S]*\}/);
-      const jsonString = jsonMatch ? jsonMatch[0] : generatedText;
-      parsedData = JSON.parse(jsonString);
-    } catch (e) {
-      // Fallback if JSON parsing fails
-      parsedData = {
-        analysis: generatedText,
-        probable_causes: [],
-        urgency_level: 'Medium',
-        home_remedies: [],
-        medical_advice: "Please consult a healthcare professional for accurate diagnosis.",
-        disclaimer: "Could not parse structured data. Please consult a doctor."
-      };
-    }
-
-    return NextResponse.json(parsedData);
+    const result = await analyzeSymptoms(conversation, language);
+    return NextResponse.json(result);
 
   } catch (error: any) {
     console.error('Error in health agent:', error);

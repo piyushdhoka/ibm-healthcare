@@ -5,20 +5,26 @@ import React, { useState, useRef, useEffect } from 'react';
 interface Message {
     role: 'user' | 'assistant';
     content: string;
+    isAssessment?: boolean;
+    data?: any;
 }
 
 interface HealthChatProps {
-    diagnosisContext?: any;
-    onSymptomUpdate: (symptom: string) => void;
+    onSymptomUpdate?: (symptom: string) => void;
+    onAssessmentReceived?: (data: any) => void;
     voiceInput?: string;
     language: string;
 }
 
-export default function HealthChat({ diagnosisContext, onSymptomUpdate, voiceInput, language }: HealthChatProps) {
+export default function HealthChat({ onSymptomUpdate, onAssessmentReceived, voiceInput, language }: HealthChatProps) {
     const [messages, setMessages] = useState<Message[]>([
         { role: 'assistant', content: 'Hello. Describe your symptoms, and I will analyze them for you.' }
     ]);
     const [input, setInput] = useState('');
+    const [loading, setLoading] = useState(false);
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const audioRef = useRef<HTMLAudioElement | null>(null);
+    const [playingIndex, setPlayingIndex] = useState<number | null>(null);
 
     // Update input when voiceInput prop changes
     useEffect(() => {
@@ -26,28 +32,12 @@ export default function HealthChat({ diagnosisContext, onSymptomUpdate, voiceInp
             setInput(prev => prev ? `${prev} ${voiceInput}` : voiceInput);
         }
     }, [voiceInput]);
-    const [loading, setLoading] = useState(false);
-    const scrollRef = useRef<HTMLDivElement>(null);
-
-    const [playingIndex, setPlayingIndex] = useState<number | null>(null);
-    const audioRef = useRef<HTMLAudioElement | null>(null);
-
-    // Track if we have already welcomed the user with context
-    const [hasWelcomedContext, setHasWelcomedContext] = useState(false);
-
-    // Auto-respond when diagnosis changes (if not already discussed)
-    useEffect(() => {
-        // Only trigger if we have a diagnosis and it's substantial
-        if (diagnosisContext && diagnosisContext.analysis && !hasWelcomedContext && messages.length > 2) {
-            // Logic for context updates
-        }
-    }, [diagnosisContext]);
 
     useEffect(() => {
         if (scrollRef.current) {
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
-    }, [messages]);
+    }, [messages, loading]);
 
     const speakMessage = async (text: string, index: number) => {
         if (playingIndex === index && audioRef.current) {
@@ -91,32 +81,29 @@ export default function HealthChat({ diagnosisContext, onSymptomUpdate, voiceInp
         if (!input.trim()) return;
 
         const userMsg: Message = { role: 'user', content: input };
-        setMessages(prev => [...prev, userMsg]);
+        const newHistory = [...messages, userMsg];
+        setMessages(newHistory);
         const currentInput = input;
         setInput('');
         setLoading(true);
 
-        // 1. Trigger Global Analysis Update
-        onSymptomUpdate(currentInput);
-
-        // 2. Get Chatbot Response
-        // We pass the *current known* context. Note: The parent update related to this input might take a moment.
-        // Ideally we'd wait for the new context. But for immediate feedback, we can send the current input.
-        // The Chat API should be smart enough to ask a follow up based on the input text itself + previous history.
-
-        // Slight delay to allow UI to settle?
-        // setTimeout(async () => { ... }, 1000); 
+        if (onSymptomUpdate) {
+            onSymptomUpdate(currentInput);
+        }
 
         try {
-            const response = await fetch('/api/chat', {
+            // Transform history for API: remove local flags like isAssessment if backend doesnt want them
+            const apiMessages = newHistory.map(m => ({ 
+                role: m.role, 
+                content: m.content 
+            }));
+
+            const response = await fetch('/api/analyze', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    message: currentInput,
-                    history: messages,
+                    messages: apiMessages,
                     language,
-                    // We pass the *previous* context purely for history, but the NLU will look at the new message.
-                    context: diagnosisContext ? `Current Analysis: ${diagnosisContext.analysis}` : ''
                 }),
             });
 
@@ -124,8 +111,28 @@ export default function HealthChat({ diagnosisContext, onSymptomUpdate, voiceInp
 
             if (!response.ok) throw new Error(data.error);
 
-            setMessages(prev => [...prev, { role: 'assistant', content: data.reply }]);
+            if (data.type === 'assessment' && data.data) {
+                // Assessment received
+                const d = data.data;
+                const summary = `I've analyzed your symptoms (${d.analysis}).\n\nProbable Causes: ${d.probable_causes.join(', ')}.\n\nAdvice: ${d.medical_advice}`;
+                
+                setMessages(prev => [...prev, { 
+                    role: 'assistant', 
+                    content: summary,
+                    isAssessment: true, // Flag to render differently if needed
+                    data: d 
+                }]);
+
+                if (onAssessmentReceived) {
+                    onAssessmentReceived(d);
+                }
+            } else {
+                // Normal chat reply
+                setMessages(prev => [...prev, { role: 'assistant', content: data.reply || "I'm listening." }]);
+            }
+
         } catch (error) {
+            console.error(error);
             setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, I am having trouble connecting right now.' }]);
         } finally {
             setLoading(false);
@@ -135,16 +142,34 @@ export default function HealthChat({ diagnosisContext, onSymptomUpdate, voiceInp
     return (
         <div className="flex flex-col h-full w-full">
             {/* Chat Messages */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-6" ref={scrollRef}>
+            <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6" ref={scrollRef}>
                 {messages.map((m, i) => (
                     <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                         <div className={`max-w-[85%] flex flex-col gap-1 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
-                            <div className={`px-6 py-4 rounded-3xl text-sm md:text-base leading-relaxed backdrop-blur-md shadow-lg border-opacity-20 ${m.role === 'user'
+                            <div className={`px-5 py-3 md:px-6 md:py-4 rounded-3xl text-sm md:text-base leading-relaxed backdrop-blur-md shadow-lg border-opacity-20 ${m.role === 'user'
                                 ? 'bg-white/10 text-white rounded-br-none border border-white/20'
                                 : 'bg-black/30 text-white rounded-bl-none border border-white/10'
                                 }`}>
-                                {m.content}
+                                
+                                {m.content.split('\n').map((line, idx) => (
+                                    <p key={idx} className={idx > 0 ? 'mt-2' : ''}>{line}</p>
+                                ))}
+
+                                {m.isAssessment && m.data && (
+                                    <div className="mt-4 pt-4 border-t border-white/10 text-sm">
+                                        <p className="font-semibold text-indigo-300 mb-1">Recommended Action</p>
+                                        <p className="opacity-90">{m.data.medical_advice}</p>
+                                        <div className="mt-2 flex gap-2 flex-wrap">
+                                            {m.data.home_remedies.slice(0, 2).map((r: string, rid: number) => (
+                                                <span key={rid} className="px-2 py-0.5 bg-white/10 rounded-full text-xs text-indigo-200">
+                                                    {r}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
+                            
                             {m.role === 'assistant' && (
                                 <button
                                     onClick={() => speakMessage(m.content, i)}
@@ -157,7 +182,7 @@ export default function HealthChat({ diagnosisContext, onSymptomUpdate, voiceInp
                     </div>
                 ))}
                 {loading && (
-                    <div className="flex justify-start">
+                    <div className="flex justify-start animate-fade-in-up">
                         <div className="bg-white/5 rounded-3xl px-6 py-4 text-sm text-white/60 animate-pulse flex items-center gap-2">
                             <span className="w-2 h-2 bg-white/60 rounded-full animate-bounce"></span>
                             <span className="w-2 h-2 bg-white/60 rounded-full animate-bounce delay-100"></span>
@@ -168,12 +193,12 @@ export default function HealthChat({ diagnosisContext, onSymptomUpdate, voiceInp
             </div>
 
             {/* Input Area */}
-            <div className="p-4">
+            <div className="p-4 pt-2">
                 <div className="flex gap-3 relative max-w-3xl mx-auto bg-black/20 p-2 rounded-full border border-white/10 backdrop-blur-lg">
                     <input
                         type="text"
                         className="flex-1 px-6 py-3 bg-transparent outline-none text-white placeholder-white/40 font-medium"
-                        placeholder="Describe symptoms..."
+                        placeholder="Type a message..."
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
@@ -187,6 +212,11 @@ export default function HealthChat({ diagnosisContext, onSymptomUpdate, voiceInp
                     >
                         ↑
                     </button>
+                </div>
+                <div className="text-center mt-2">
+                    <p className="text-[10px] text-white/30 uppercase tracking-widest">
+                        AI can make mistakes. Check important info.
+                    </p>
                 </div>
             </div>
         </div>
