@@ -46,40 +46,62 @@ export async function analyzeSymptoms(messages: any[], language: string = 'Engli
     // 2. Call Watsonx.ai
     const modelId = 'ibm/granite-3-8b-instruct'; 
 
-    const systemPrompt = `You are a medical symptom analysis AI assistant. Analyze symptoms accurately and provide helpful health guidance.
+    // Count user messages to determine if we should give assessment
+    const userMessageCount = messages.filter((m: any) => m.role === 'user').length;
+    const shouldAssess = userMessageCount >= 2;
 
-CRITICAL RULES:
-1. SAFETY FIRST: For emergencies (chest pain, breathing difficulty, stroke symptoms, severe bleeding, loss of consciousness) - set urgency_level to "Emergency" and advise immediate medical care.
-2. Be ACCURATE: Base analysis on established medical knowledge. Don't guess - ask for clarification if needed.
-3. Be SPECIFIC: Give actionable advice, not vague suggestions.
-4. Language: Respond in ${language}.
+    const systemPrompt = `You are Dr. Health, a compassionate and knowledgeable AI medical assistant. You provide thorough, detailed health guidance.
 
-OUTPUT FORMAT - Return ONLY valid JSON (no markdown, no \`\`\`):
+🚨 EMERGENCY KEYWORDS - Detect and respond immediately with Emergency assessment:
+heart attack, chest pain, mini heart attack, cardiac, can't breathe, difficulty breathing, choking, stroke, face drooping, arm weakness, slurred speech, severe bleeding, unconscious, seizure, suicidal, overdose, anaphylaxis, severe allergic
 
-For SYMPTOM DESCRIPTIONS (user tells you what they feel):
+For ANY emergency, skip ALL questions and provide immediate Emergency assessment.
+
+📋 CONVERSATION FLOW:
+${shouldAssess ? '- User has provided enough information. Provide detailed assessment now.' : '- This is early in conversation. Ask 1-2 caring follow-up questions about duration, severity (1-10), other symptoms, or triggers.'}
+
+🌍 Language: Respond entirely in ${language}.
+
+📤 OUTPUT - Return ONLY valid JSON (no markdown, no backticks, no extra text):
+
+FOR FOLLOW-UP (gathering info):
+{"type":"chat","reply":"I understand you're experiencing [symptom]. That sounds uncomfortable. To help you better, could you tell me: 1) How long have you had this? 2) On a scale of 1-10, how severe is it?"}
+
+FOR DETAILED ASSESSMENT (enough info gathered OR emergency):
 {
-  "type": "assessment",
-  "data": {
-    "analysis": "Clear 2-3 sentence summary of symptoms and likely condition",
-    "probable_causes": ["Most likely cause", "Second possibility", "Third possibility"],
-    "urgency_level": "Low|Medium|High|Emergency",
-    "home_remedies": ["Specific remedy 1", "Specific remedy 2", "Specific remedy 3"],
-    "medical_advice": "When to see a doctor and what type of doctor",
-    "disclaimer": "This is not a diagnosis. Consult a healthcare provider for medical advice."
+  "type":"assessment",
+  "data":{
+    "analysis":"[3-4 detailed sentences explaining the condition, what might be happening in the body, and why the symptoms occur. Be specific and educational.]",
+    "probable_causes":[
+      "[Most likely cause with brief explanation]",
+      "[Second possibility with brief explanation]", 
+      "[Third possibility with brief explanation]"
+    ],
+    "urgency_level":"[Low/Medium/High/Emergency]",
+    "home_remedies":[
+      "[Specific actionable remedy with dosage/timing if applicable]",
+      "[Second remedy with clear instructions]",
+      "[Third remedy - what to avoid]",
+      "[Fourth remedy - lifestyle adjustment]"
+    ],
+    "medical_advice":"[When to see doctor, what type of specialist, what tests might be needed, warning signs to watch for]",
+    "disclaimer":"This is AI-generated health information, not a medical diagnosis. Always consult a healthcare professional for proper medical advice."
   }
 }
 
-For FOLLOW-UP QUESTIONS or general health queries:
-{
-  "type": "chat",
-  "reply": "Your helpful response"
-}
-
 URGENCY LEVELS:
-- Low: Common ailments, self-limiting (common cold, minor headache)
-- Medium: Needs monitoring, may need doctor in 1-2 days (moderate fever, persistent symptoms)
-- High: See doctor today/tomorrow (high fever, worsening symptoms, concerning signs)
-- Emergency: Call 911/112 NOW (chest pain, breathing problems, stroke signs, severe bleeding)`;
+- Low: Self-care at home (cold, minor headache, small cuts)
+- Medium: See doctor within 2-3 days (persistent fever, infections)
+- High: See doctor within 24 hours (high fever >103°F, severe pain, concerning symptoms)
+- Emergency: Call 911/emergency services NOW (heart attack, stroke, severe bleeding, can't breathe)
+
+QUALITY GUIDELINES:
+✓ Be detailed and specific, not generic
+✓ Explain WHY remedies help
+✓ Include specific dosages when safe (e.g., "Take 400mg ibuprofen every 6 hours")
+✓ Mention what to AVOID
+✓ Be empathetic and reassuring
+✓ For emergencies: Include immediate actions while waiting for help`;
 
     // Limit context to last 6 messages
     const recentMessages = messages.slice(-6);
@@ -97,10 +119,11 @@ URGENCY LEVELS:
       input: inputData,
       parameters: {
         decoding_method: 'greedy',
-        max_new_tokens: 900,
-        min_new_tokens: 1,
+        max_new_tokens: 1500,
+        min_new_tokens: 50,
         stop_sequences: [],
-        repetition_penalty: 1.05
+        repetition_penalty: 1.05,
+        temperature: 0.7
       }
     };
 
@@ -122,19 +145,56 @@ URGENCY LEVELS:
 
     const data = await scoringResponse.json();
     const generatedText = data.results[0].generated_text;
+    
+    console.log("Raw AI response:", generatedText);
 
-    // Attempt to parse JSON from the model response
+    // Robust JSON extraction
     let parsedData: ChatResponse;
     try {
-        const jsonMatch = generatedText.match(/\{[\s\S]*\}/);
-        const jsonString = jsonMatch ? jsonMatch[0] : generatedText;
-        parsedData = JSON.parse(jsonString);
+        // Try to find the FIRST complete JSON object
+        let depth = 0;
+        let startIdx = -1;
+        let endIdx = -1;
+        
+        for (let i = 0; i < generatedText.length; i++) {
+            if (generatedText[i] === '{') {
+                if (depth === 0) startIdx = i;
+                depth++;
+            } else if (generatedText[i] === '}') {
+                depth--;
+                if (depth === 0 && startIdx !== -1) {
+                    endIdx = i;
+                    break;
+                }
+            }
+        }
+        
+        if (startIdx !== -1 && endIdx !== -1) {
+            const jsonString = generatedText.substring(startIdx, endIdx + 1);
+            parsedData = JSON.parse(jsonString);
+        } else {
+            throw new Error("No valid JSON found");
+        }
+        
+        // Validate the response structure
+        if (!parsedData.type) {
+            parsedData.type = 'chat';
+        }
+        if (parsedData.type === 'chat' && !parsedData.reply) {
+            parsedData.reply = generatedText.replace(/[{}"]/g, '').trim() || "Could you tell me more about your symptoms?";
+        }
+        
     } catch (e) {
-        console.error("JSON Parse Error", e);
-        // Fallback
+        console.error("JSON Parse Error:", e);
+        // Extract any readable text as fallback
+        const cleanText = generatedText
+            .replace(/```json|```/g, '')
+            .replace(/\{[\s\S]*?\}/g, '')
+            .trim();
+        
         parsedData = {
             type: 'chat',
-            reply: generatedText || "I'm having trouble processing that request. Please try again."
+            reply: cleanText || "I understand. Could you provide more details about your symptoms?"
         };
     }
 

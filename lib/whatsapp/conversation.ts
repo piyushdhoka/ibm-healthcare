@@ -14,6 +14,7 @@ export interface Conversation {
   messages: Message[];
   lastAssessment: any;
   lastActivity: number;
+  language?: string; // Detected/preferred language for the conversation
 }
 
 // In-memory conversation store (per phone number)
@@ -75,6 +76,12 @@ export function addMessage(userId: string, message: Message): void {
 export function setLastAssessment(userId: string, assessment: any): void {
   const conversation = getOrCreateConversation(userId);
   conversation.lastAssessment = assessment;
+  conversationStore.set(userId, conversation);
+}
+
+export function setConversationLanguage(userId: string, language: string): void {
+  const conversation = getOrCreateConversation(userId);
+  conversation.language = language;
   conversationStore.set(userId, conversation);
 }
 

@@ -15,6 +15,7 @@ import {
   deleteConversation,
   addMessage,
   setLastAssessment,
+  setConversationLanguage,
   formatAssessmentResponse,
   formatMoreDetails,
   formatRemedies,
@@ -47,14 +48,22 @@ export async function POST(req: Request) {
     
     let isVoiceMessage = false;
     let voiceTranscript = '';
+    let detectedVoiceLanguage = 'English';
 
     // Handle audio/voice messages
     if (numMedia > 0 && mediaUrl && mediaType?.startsWith('audio')) {
       isVoiceMessage = true;
       try {
-        voiceTranscript = await transcribeAudio(mediaUrl);
-        if (voiceTranscript) {
-          body = voiceTranscript;
+        // Get user's preferred language from conversation if exists
+        const existingConv = getConversation(from);
+        const preferredLang = existingConv?.language || 'en';
+        
+        const transcriptionResult = await transcribeAudio(mediaUrl, preferredLang);
+        if (transcriptionResult.transcript) {
+          body = transcriptionResult.transcript;
+          voiceTranscript = transcriptionResult.transcript;
+          detectedVoiceLanguage = transcriptionResult.detectedLanguage;
+          console.log(`Voice transcribed (${detectedVoiceLanguage}, ${transcriptionResult.confidence}% confidence): ${voiceTranscript}`);
         } else {
           return sendTwiMLResponse(VOICE_UNCLEAR_MESSAGE);
         }
@@ -151,8 +160,14 @@ export async function POST(req: Request) {
         : msg.content
     }));
 
-    // Call AI
-    const language = detectLanguage(body);
+    // Call AI - use detected voice language or detected text language
+    const language = isVoiceMessage ? detectedVoiceLanguage : detectLanguage(body);
+    
+    // Save detected language for future voice messages
+    if (isVoiceMessage && detectedVoiceLanguage) {
+      setConversationLanguage(from, detectedVoiceLanguage === 'English' ? 'en' : detectedVoiceLanguage.slice(0, 2).toLowerCase());
+    }
+    
     const result = await analyzeSymptoms(enhancedMessages, language);
 
     // Format response

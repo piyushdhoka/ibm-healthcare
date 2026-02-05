@@ -29,6 +29,7 @@ export default function Home() {
   
   // Voice states
   const [isRecording, setIsRecording] = useState(false);
+  const [voiceInputMode, setVoiceInputMode] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   
@@ -84,8 +85,12 @@ export default function Home() {
     }
   };
 
-  const sendMessage = async () => {
-    if (!input.trim() || loading) return;
+  const sendMessage = async (messageText?: string, isVoiceInput: boolean = false) => {
+    const textToSend = messageText || input;
+    if (!textToSend.trim() || loading) return;
+
+    // Track if this was a voice input for auto TTS response
+    if (isVoiceInput) setVoiceInputMode(true);
 
     // Auto create conversation if none
     if (!activeConversation) {
@@ -99,7 +104,7 @@ export default function Home() {
       setActiveConversation(newConv.id);
     }
 
-    const userMessage: Message = { role: 'user', content: input.trim() };
+    const userMessage: Message = { role: 'user', content: textToSend.trim() };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
     setInput('');
@@ -110,7 +115,7 @@ export default function Home() {
     if (activeConversation && messages.length === 0) {
       setConversations(prev => prev.map(c => 
         c.id === activeConversation 
-          ? { ...c, title: input.trim().slice(0, 30) + (input.length > 30 ? '...' : '') }
+          ? { ...c, title: textToSend.trim().slice(0, 30) + (textToSend.length > 30 ? '...' : '') }
           : c
       ));
     }
@@ -138,9 +143,20 @@ export default function Home() {
           data: d
         };
       } else {
+        // Clean the reply - ensure no raw JSON is shown
+        let reply = data.reply || "I understand. Could you tell me more about your symptoms?";
+        // If somehow reply contains JSON, extract readable text
+        if (reply.includes('"type"') || reply.includes('"reply"')) {
+          try {
+            const parsed = JSON.parse(reply);
+            reply = parsed.reply || reply;
+          } catch {
+            // Not JSON, keep as is
+          }
+        }
         assistantMessage = {
           role: 'assistant',
-          content: data.reply || "I understand. Could you tell me more about your symptoms?"
+          content: reply
         };
       }
 
@@ -155,31 +171,57 @@ export default function Home() {
         ));
       }
 
+      // Auto-play TTS response if input was via voice
+      if (voiceInputMode) {
+        setVoiceInputMode(false);
+        await playTTSResponse(assistantMessage.content);
+      }
+
     } catch (err: any) {
       setError(err.message);
       setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, I encountered an error. Please try again.' }]);
+      setVoiceInputMode(false);
     } finally {
       setLoading(false);
     }
   };
 
   const formatAnalysis = (data: any) => {
-    return `## Health Analysis
+    const urgencyMap: Record<string, string> = {
+      'Low': '🟢',
+      'Medium': '🟡', 
+      'High': '🟠',
+      'Emergency': '🔴'
+    };
+    const urgencyEmoji = urgencyMap[data.urgency_level] || '⚪';
 
-**Summary:** ${data.analysis}
+    const actionMap: Record<string, string> = {
+      'Low': 'Self-care at home should help',
+      'Medium': 'Consider seeing a doctor within 2-3 days if symptoms persist',
+      'High': 'See a doctor within 24 hours',
+      'Emergency': '⚠️ SEEK IMMEDIATE MEDICAL ATTENTION - Call emergency services (911/112)'
+    };
+    const urgencyAction = actionMap[data.urgency_level] || '';
 
-**Possible Causes:**
-${data.probable_causes?.map((c: string) => `- ${c}`).join('\n') || 'None identified'}
+    return `## 🏥 Health Analysis
 
-**Urgency Level:** ${data.urgency_level || 'Unknown'}
+**📋 Summary:**
+${data.analysis}
 
-**Recommendations:**
-${data.medical_advice || 'Please consult a healthcare professional.'}
+**🔍 Possible Causes:**
+${data.probable_causes?.map((c: string) => `• ${c}`).join('\n') || 'Further evaluation needed'}
 
-${data.home_remedies?.length ? `**Home Remedies:**\n${data.home_remedies.map((r: string) => `- ${r}`).join('\n')}` : ''}
+**${urgencyEmoji} Urgency Level: ${data.urgency_level || 'Unknown'}**
+${urgencyAction}
+
+**💊 Home Remedies & Self-Care:**
+${data.home_remedies?.map((r: string) => `• ${r}`).join('\n') || 'Rest and stay hydrated'}
+
+**👨‍⚕️ Medical Advice:**
+${data.medical_advice || 'Consult a healthcare professional if symptoms persist or worsen.'}
 
 ---
-*This is not a medical diagnosis. Please consult a healthcare professional for proper medical advice.*`;
+*⚠️ ${data.disclaimer || 'This is AI-generated health information, not a medical diagnosis. Always consult a healthcare professional for proper medical advice.'}*`;
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -207,12 +249,19 @@ ${data.home_remedies?.length ? `**Home Remedies:**\n${data.home_remedies.map((r:
         
         const formData = new FormData();
         formData.append('audio', audioBlob);
+        formData.append('language', language);
+        formData.append('autoDetect', 'true');
         
         try {
           const response = await fetch('/api/stt', { method: 'POST', body: formData });
           const data = await response.json();
           if (data.transcript) {
-            setInput(prev => prev ? `${prev} ${data.transcript}` : data.transcript);
+            // Auto-send the voice message (will trigger TTS response)
+            sendMessage(data.transcript, true);
+            // Show detected language if different
+            if (data.detectedLanguage && data.detectedLanguage !== language) {
+              console.log(`Detected language: ${data.detectedLanguage} (confidence: ${data.confidence}%)`);
+            }
           }
         } catch (err) {
           console.error('STT error:', err);
@@ -233,6 +282,37 @@ ${data.home_remedies?.length ? `**Home Remedies:**\n${data.home_remedies.map((r:
     }
   };
 
+  // Auto-play TTS response (for voice input mode)
+  const playTTSResponse = async (text: string) => {
+    try {
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          text: text.replace(/[#*_\-|]/g, '').replace(/\n+/g, '. '),
+          language,
+          voicePreference: 'female',
+          audioFormat: 'mp3',
+        }),
+      });
+
+      if (!response.ok) return;
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+
+      if (audioRef.current) audioRef.current.pause();
+
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      setPlayingIndex(messages.length); // Mark as playing
+      audio.onended = () => setPlayingIndex(null);
+      audio.play();
+    } catch (err) {
+      console.error('Auto-TTS error:', err);
+    }
+  };
+
   // TTS
   const speakMessage = async (text: string, index: number) => {
     if (playingIndex === index && audioRef.current) {
@@ -245,7 +325,12 @@ ${data.home_remedies?.length ? `**Home Remedies:**\n${data.home_remedies.map((r:
       const response = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text.replace(/[#*_-]/g, '') }),
+        body: JSON.stringify({ 
+          text: text.replace(/[#*_-]/g, ''),
+          language,
+          voicePreference: 'female',
+          audioFormat: 'mp3',
+        }),
       });
 
       if (!response.ok) throw new Error('TTS failed');
@@ -344,10 +429,18 @@ ${data.home_remedies?.length ? `**Home Remedies:**\n${data.home_remedies.map((r:
               onChange={(e) => setLanguage(e.target.value)}
               className="bg-transparent border border-white/20 rounded-lg px-3 py-1.5 text-sm outline-none hover:bg-white/5 cursor-pointer"
             >
-              <option value="English" className="bg-[#212121]">English</option>
-              <option value="Spanish" className="bg-[#212121]">Spanish</option>
-              <option value="French" className="bg-[#212121]">French</option>
-              <option value="Hindi" className="bg-[#212121]">Hindi</option>
+              <option value="English" className="bg-[#212121]">🇺🇸 English</option>
+              <option value="Spanish" className="bg-[#212121]">🇪🇸 Spanish</option>
+              <option value="French" className="bg-[#212121]">🇫🇷 French</option>
+              <option value="German" className="bg-[#212121]">🇩🇪 German</option>
+              <option value="Hindi" className="bg-[#212121]">🇮🇳 Hindi</option>
+              <option value="Portuguese" className="bg-[#212121]">🇧🇷 Portuguese</option>
+              <option value="Italian" className="bg-[#212121]">🇮🇹 Italian</option>
+              <option value="Japanese" className="bg-[#212121]">🇯🇵 Japanese</option>
+              <option value="Korean" className="bg-[#212121]">🇰🇷 Korean</option>
+              <option value="Chinese" className="bg-[#212121]">🇨🇳 Chinese</option>
+              <option value="Dutch" className="bg-[#212121]">🇳🇱 Dutch</option>
+              <option value="Arabic" className="bg-[#212121]">🇸🇦 Arabic</option>
             </select>
           </div>
         </header>
@@ -550,7 +643,7 @@ ${data.home_remedies?.length ? `**Home Remedies:**\n${data.home_remedies.map((r:
 
                 {/* Send Button */}
                 <button
-                  onClick={sendMessage}
+                  onClick={() => sendMessage()}
                   disabled={!input.trim() || loading}
                   className={`p-2 rounded-lg transition-colors ${
                     input.trim() && !loading
