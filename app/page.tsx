@@ -6,6 +6,8 @@ import GeometricBackground from '../components/GeometricBackground';
 import HealthChat from '../components/HealthChat';
 import Link from 'next/link';
 import { Circle } from 'lucide-react';
+import jsPDF from 'jspdf';
+import { toPng } from 'html-to-image';
 
 export default function Home() {
   const [symptoms, setSymptoms] = useState('');
@@ -15,6 +17,7 @@ export default function Home() {
   const [whoData, setWhoData] = useState<any[]>([]);
   const [error, setError] = useState('');
   const [showPanel, setShowPanel] = useState(false);
+  const analysisPanelRef = useRef<HTMLDivElement>(null);
 
   // Audio Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -33,6 +36,47 @@ export default function Home() {
       setIsPlaying(false);
     }
   }
+
+  const handleDownloadPDF = async () => {
+    if (!analysisPanelRef.current) return;
+
+    try {
+      const dataUrl = await toPng(analysisPanelRef.current, {
+        backgroundColor: '#050505',
+        cacheBust: true,
+      });
+
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+
+      const img = new Image();
+      img.src = dataUrl;
+
+      img.onload = () => {
+        const imgWidth = pdfWidth;
+        const imgHeight = (img.height * imgWidth) / img.width;
+
+        let heightLeft = imgHeight;
+        let position = 0;
+
+        pdf.addImage(dataUrl, 'PNG', 0, position, imgWidth, imgHeight);
+        heightLeft -= pdfHeight;
+
+        while (heightLeft >= 0) {
+          position = heightLeft - imgHeight;
+          pdf.addPage();
+          pdf.addImage(dataUrl, 'PNG', 0, position, imgWidth, imgHeight);
+          heightLeft -= pdfHeight;
+        }
+
+        pdf.save('Health_Analysis.pdf');
+      };
+    } catch (err) {
+      console.error("PDF Generation Error", err);
+      setError("Failed to generate PDF");
+    }
+  };
 
   // Chat updates analysis -> Panel slides in
   const handleChatUpdate = (newMessage: string) => {
@@ -69,14 +113,29 @@ export default function Home() {
       setShowPanel(true); // Open panel on result
 
       // Step 2: WHO Scraping
-      let whoQuery = textToAnalyze.split(' ').slice(0, 3).join(' ');
-      if (analyzeData.probable_causes && analyzeData.probable_causes.length > 0) {
+      // Prioritize the explicit English name, otherwise fallback to probable causes
+      let whoQuery = analyzeData.english_disease_name;
+
+      if (!whoQuery && analyzeData.probable_causes && analyzeData.probable_causes.length > 0) {
         whoQuery = analyzeData.probable_causes[0];
       }
 
-      const whoResponse = await fetch(`/api/scrape/who?query=${encodeURIComponent(whoQuery)}`);
-      const whoJson = await whoResponse.json();
-      setWhoData(whoJson.results || []);
+      // Fallback for query safety
+      if (!whoQuery) {
+        whoQuery = textToAnalyze.split(' ').slice(0, 3).join(' ');
+      }
+
+      console.log("Fetching WHO for:", whoQuery);
+
+      try {
+        const whoResponse = await fetch(`/api/scrape/who?query=${encodeURIComponent(whoQuery)}`);
+        const whoJson = await whoResponse.json();
+        console.log("WHO Data received:", whoJson);
+        setWhoData(whoJson.results || []);
+      } catch (scrapeErr) {
+        console.error("WHO Scraping failed", scrapeErr);
+        setWhoData([]);
+      }
 
     } catch (err: any) {
       setError(err.message);
@@ -232,6 +291,14 @@ export default function Home() {
               <Link href="/drug-info" className="px-4 py-2 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 transition-colors text-xs flex items-center gap-2 text-white/70 whitespace-nowrap">
                 💊 Drug Info
               </Link>
+              <a
+                href="https://www.who.int/health-topics"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-4 py-2 rounded-full bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 transition-colors text-xs flex items-center gap-2 text-blue-200 whitespace-nowrap"
+              >
+                🌍 WHO Topics
+              </a>
 
               {/* WHO Quick Card (Floating/Popover style) */}
               {whoData.length > 0 && !showPanel && (
@@ -317,13 +384,22 @@ export default function Home() {
             <h2 className="text-2xl font-bold flex items-center gap-3 text-white">
               <span className="text-3xl">🩺</span> Analysis
             </h2>
-            <button onClick={() => setShowPanel(false)} className="p-2 rounded-full hover:bg-white/10 transition-colors text-white/50 hover:text-white">
-              ✕
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleDownloadPDF}
+                className="p-2 rounded-full hover:bg-white/10 transition-colors text-white/50 hover:text-white flex items-center justify-center"
+                title="Download PDF"
+              >
+                📄
+              </button>
+              <button onClick={() => setShowPanel(false)} className="p-2 rounded-full hover:bg-white/10 transition-colors text-white/50 hover:text-white">
+                ✕
+              </button>
+            </div>
           </div>
 
           {/* Panel Content */}
-          <div className="p-8 space-y-8">
+          <div className="p-8 space-y-8" ref={analysisPanelRef}>
             {result ? (
               <>
                 {/* Clinical Summary */}
@@ -340,7 +416,7 @@ export default function Home() {
                     {result.analysis}
                   </p>
 
-                  <div className="flex gap-2 mt-4">
+                  <div className="flex gap-2 mt-4" data-html2canvas-ignore>
                     <button
                       onClick={isPlaying ? stopAudio : playAnalysis}
                       className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-white/70 flex items-center gap-2 transition-all"

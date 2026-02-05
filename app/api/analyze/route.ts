@@ -68,6 +68,7 @@ export async function POST(req: Request) {
     {
       "analysis": "रोगी को पेट में तेज दर्द और उल्टी की शिकायत है।",
       "probable_causes": ["विषाक्त भोजन", "गैस", "पेट का संक्रमण"],
+      "english_disease_name": "Food Poisoning",
       "urgency_level": "Medium",
       "home_remedies": ["अदरक की चाय पिएं", "हल्का भोजन करें", "हाइड्रेटेड रहें"],
       "medical_advice": "यदि दर्द 24 घंटे से अधिक समय तक रहता है, तो डॉक्टर से परामर्श लें।",
@@ -79,6 +80,7 @@ export async function POST(req: Request) {
     {
       "analysis": "Brief summary of the symptoms.",
       "probable_causes": ["Cause 1", "Cause 2", "Cause 3"],
+      "english_disease_name": "The most probable cause in English (for search purposes)",
       "urgency_level": "Low" | "Medium" | "High" | "Emergency",
       "home_remedies": ["Remedy 1", "Remedy 2"],
       "medical_advice": "When to see a doctor...",
