@@ -10,13 +10,14 @@ interface Message {
 }
 
 interface HealthChatProps {
+    diagnosisContext?: any;
     onSymptomUpdate?: (symptom: string) => void;
     onAssessmentReceived?: (data: any) => void;
     voiceInput?: string;
     language: string;
 }
 
-export default function HealthChat({ onSymptomUpdate, onAssessmentReceived, voiceInput, language }: HealthChatProps) {
+export default function HealthChat({ diagnosisContext, onSymptomUpdate, onAssessmentReceived, voiceInput, language }: HealthChatProps) {
     const [messages, setMessages] = useState<Message[]>([
         { role: 'assistant', content: 'Hello. Describe your symptoms, and I will analyze them for you.' }
     ]);
