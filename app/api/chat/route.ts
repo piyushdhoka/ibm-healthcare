@@ -7,7 +7,7 @@ import { NextResponse } from 'next/server';
 
 export async function POST(req: Request) {
     try {
-        const { message, history, context } = await req.json();
+        const { message, history, context, language } = await req.json();
 
         const NLU_API_KEY = process.env.IBM_NLU_API_KEY;
         const NLU_URL = process.env.IBM_NLU_URL;
@@ -85,9 +85,19 @@ export async function POST(req: Request) {
         const accessToken = tokenData.access_token;
 
         // Construct prompt
-        const systemPrompt = `You are a helpful medical assistant chatbot. 
+        const systemPrompt = `You are a helpful medical assistant chatbot.
     Your goal is to ask relevant follow-up questions to clarify the user's symptoms and answers queries about their diagnosis.
     Use the provided NLU analysis to tailor your response.
+    
+    CRITICAL INSTRUCTION: The user has selected the language: "${language}". 
+    You MUST reply in "${language}" ONLY. Do NOT use English if the selected language is not English.
+    If the language is "Hindi", use Devanagari script.
+    
+    ${language === 'Hindi' ? `
+    Example Conversation in Hindi:
+    User: मुझे सिरदर्द है।
+    Assistant: मुझे यह सुनकर खेद है। यह दर्द कब से हो रहा है? क्या यह तेज है या हल्का?
+    ` : ''}
     
     ${context ? `CURRENT DIAGNOSIS CONTEXT: ${context}` : ''}
     
@@ -104,7 +114,7 @@ export async function POST(req: Request) {
         const payload = {
             model_id: 'ibm/granite-3-8b-instruct',
             project_id: WATSONX_PROJECT_ID,
-            input: `System: ${systemPrompt}\n\n${conversation}\nUser: ${message}\nAssistant:`,
+            input: `System: ${systemPrompt}\n\n${conversation}\nUser: ${message} (Reply in ${language})\nAssistant:`,
             parameters: {
                 decoding_method: 'greedy',
                 max_new_tokens: 150,

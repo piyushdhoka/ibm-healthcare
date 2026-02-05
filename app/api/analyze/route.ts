@@ -48,7 +48,7 @@ export async function POST(req: Request) {
 
     // 2. Call Watsonx.ai (using IBM Granite)
     // We use granite-3-8b-instruct or similar available model
-    const modelId = 'ibm/granite-3-8b-instruct'; 
+    const modelId = 'ibm/granite-3-8b-instruct';
 
     const systemPrompt = `You are an AI Health Symptom Checker agent supported by IBM Granite. 
     Your goal is to analyze symptoms provided by the user and offer health insights.
@@ -60,7 +60,21 @@ export async function POST(req: Request) {
     4. Always include a disclaimer that you are an AI and not a doctor.
     5. Output the response in valid JSON format ONLY.
     6. Respond in the language: ${language}.
+    7. CRITICAL: All user-facing strings (values in the JSON) MUST be in ${language}. 
+       If ${language} is "Hindi", use Devanagari script for the values of "analysis", "probable_causes", "home_remedies", "medical_advice", and "disclaimer". Do not just translate the keys, translate the CONTENT.
     
+    ${language === 'Hindi' ? `
+    Example Output in Hindi:
+    {
+      "analysis": "रोगी को पेट में तेज दर्द और उल्टी की शिकायत है।",
+      "probable_causes": ["विषाक्त भोजन", "गैस", "पेट का संक्रमण"],
+      "urgency_level": "Medium",
+      "home_remedies": ["अदरक की चाय पिएं", "हल्का भोजन करें", "हाइड्रेटेड रहें"],
+      "medical_advice": "यदि दर्द 24 घंटे से अधिक समय तक रहता है, तो डॉक्टर से परामर्श लें।",
+      "disclaimer": "मैं एक एआई हूँ, डॉक्टर नहीं। यह चिकित्सा सलाह नहीं है।"
+    }
+    ` : ''}
+
     JSON Schema:
     {
       "analysis": "Brief summary of the symptoms.",
@@ -72,7 +86,7 @@ export async function POST(req: Request) {
     }
     `;
 
-    const userPrompt = `User Symptoms: ${symptoms}`;
+    const userPrompt = `User Symptoms: ${symptoms}\n\nIMPORTANT: Output the JSON values in ${language} language.${language === 'Hindi' ? ' Use Devanagari script.' : ''}`;
 
     const payload = {
       model_id: modelId,
@@ -82,7 +96,7 @@ export async function POST(req: Request) {
         decoding_method: 'greedy',
         max_new_tokens: 500,
         min_new_tokens: 1,
-        stop_sequences: [],
+        stop_sequences: ['User:', 'System:', 'Disclaimer:'],
         repetition_penalty: 1.05
       }
     };
@@ -98,9 +112,9 @@ export async function POST(req: Request) {
     });
 
     if (!scoringResponse.ok) {
-        const errorText = await scoringResponse.text();
-        console.error("Watsonx API Error:", errorText);
-        throw new Error(`Watsonx API Error: ${scoringResponse.statusText}`);
+      const errorText = await scoringResponse.text();
+      console.error("Watsonx API Error:", errorText);
+      throw new Error(`Watsonx API Error: ${scoringResponse.statusText}`);
     }
 
     const data = await scoringResponse.json();
@@ -110,20 +124,20 @@ export async function POST(req: Request) {
     // Sometimes models add extra text, so we try to find the JSON block
     let parsedData: HealthResponse;
     try {
-        // specific cleanup if model returns markdown code blocks
-        const jsonMatch = generatedText.match(/\{[\s\S]*\}/);
-        const jsonString = jsonMatch ? jsonMatch[0] : generatedText;
-        parsedData = JSON.parse(jsonString);
+      // specific cleanup if model returns markdown code blocks
+      const jsonMatch = generatedText.match(/\{[\s\S]*\}/);
+      const jsonString = jsonMatch ? jsonMatch[0] : generatedText;
+      parsedData = JSON.parse(jsonString);
     } catch (e) {
-        // Fallback if JSON parsing fails
-        parsedData = {
-            analysis: generatedText,
-            probable_causes: [],
-            urgency_level: 'Medium',
-            home_remedies: [],
-            medical_advice: "Please consult a healthcare professional for accurate diagnosis.",
-            disclaimer: "Could not parse structured data. Please consult a doctor."
-        };
+      // Fallback if JSON parsing fails
+      parsedData = {
+        analysis: generatedText,
+        probable_causes: [],
+        urgency_level: 'Medium',
+        home_remedies: [],
+        medical_advice: "Please consult a healthcare professional for accurate diagnosis.",
+        disclaimer: "Could not parse structured data. Please consult a doctor."
+      };
     }
 
     return NextResponse.json(parsedData);

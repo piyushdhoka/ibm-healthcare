@@ -264,12 +264,24 @@ export default function Home() {
                 <select
                   value={language}
                   onChange={(e) => setLanguage(e.target.value)}
-                  className="bg-black/20 border border-white/10 rounded-lg text-xs text-white/60 px-2 py-1 outline-none"
+                  className="bg-black/40 border border-white/10 rounded-lg text-xs text-white/80 px-2 py-1 outline-none cursor-pointer hover:bg-black/60 transition-colors"
                 >
-                  <option value="English">EN</option>
-                  <option value="Spanish">ES</option>
-                  <option value="French">FR</option>
+                  <option value="English" className="bg-[#0a0a0a] text-white">EN</option>
+                  <option value="Spanish" className="bg-[#0a0a0a] text-white">ES</option>
+                  <option value="French" className="bg-[#0a0a0a] text-white">FR</option>
+                  <option value="Hindi" className="bg-[#0a0a0a] text-white">HI</option>
                 </select>
+
+                <button
+                  onClick={() => setShowPanel(!showPanel)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${showPanel
+                    ? 'bg-indigo-500/20 border-indigo-500 text-indigo-200 shadow-[0_0_10px_rgba(99,102,241,0.3)]'
+                    : 'bg-white/5 border-white/10 text-white/60 hover:bg-white/10 hover:text-white'
+                    }`}
+                >
+                  <span className="text-lg">📋</span>
+                  <span className="hidden sm:inline">Analysis</span>
+                </button>
                 <button
                   onClick={isRecording ? stopRecording : startRecording}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all border ${isRecording
@@ -283,7 +295,7 @@ export default function Home() {
             </div>
 
             <div className="flex-1 overflow-hidden">
-              <HealthChat diagnosisContext={result} onSymptomUpdate={handleChatUpdate} voiceInput={transcription} />
+              <HealthChat diagnosisContext={result} onSymptomUpdate={handleChatUpdate} voiceInput={transcription} language={language} />
             </div>
           </div>
 

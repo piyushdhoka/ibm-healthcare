@@ -11,9 +11,10 @@ interface HealthChatProps {
     diagnosisContext?: any;
     onSymptomUpdate: (symptom: string) => void;
     voiceInput?: string;
+    language: string;
 }
 
-export default function HealthChat({ diagnosisContext, onSymptomUpdate, voiceInput }: HealthChatProps) {
+export default function HealthChat({ diagnosisContext, onSymptomUpdate, voiceInput, language }: HealthChatProps) {
     const [messages, setMessages] = useState<Message[]>([
         { role: 'assistant', content: 'Hello. Describe your symptoms, and I will analyze them for you.' }
     ]);
@@ -113,6 +114,7 @@ export default function HealthChat({ diagnosisContext, onSymptomUpdate, voiceInp
                 body: JSON.stringify({
                     message: currentInput,
                     history: messages,
+                    language,
                     // We pass the *previous* context purely for history, but the NLU will look at the new message.
                     context: diagnosisContext ? `Current Analysis: ${diagnosisContext.analysis}` : ''
                 }),
